@@ -1,0 +1,2 @@
+files.facepunch.com
+maps.rustmaps.com
