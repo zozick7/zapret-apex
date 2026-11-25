@@ -9,7 +9,7 @@ if (-not (Get-Process -Name winws -ErrorAction SilentlyContinue)) {
 }
 
 . "$PSScriptRoot\service-state.ps1"
-$autoDir = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'Zapret Game Profiles\Apex Auto'
+$autoDir = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'Zapret Apex\Apex Auto'
 
 function Get-ApexReportStatus {
     $service = Get-ZapretService
@@ -18,19 +18,13 @@ function Get-ApexReportStatus {
         elseif ($service.Status -ne 'Running') { 'Служба выключена' }
         elseif ($service.Profile -ne 'Apex') { "Запущен другой профиль: $($service.Profile)" }
         else { 'Профиль Apex запущен из другой папки' }
-    $active = 0
-    foreach ($name in 'ipset-apex-auto-game.txt','ipset-apex-auto-sdr.txt') {
-        $file = Join-Path $autoDir $name
-        if ($owned -and $service.Command -like "*$file*") {
-            $ranges = @(Get-Content -LiteralPath $file -ErrorAction SilentlyContinue)
-            if ('0.0.0.0/1' -in $ranges -and '128.0.0.0/1' -in $ranges) { $active++ }
-        }
+    $file = Join-Path $autoDir 'ipset-apex-auto-match.txt'
+    $ranges = if ($owned -and $service.Command -like "*$file*") {
+        Get-Content -LiteralPath $file -ErrorAction SilentlyContinue
     }
-    $wide = switch ($active) {
-        2 { 'оба диапазона включены' }
-        1 { 'включён один диапазон' }
-        0 { 'широкие правила выключены' }
-    }
+    $wide = if ('0.0.0.0/1' -in $ranges -and '128.0.0.0/1' -in $ranges) {
+        'оба диапазона включены'
+    } else { 'широкие правила выключены' }
     [pscustomobject]@{ Service = $serviceText; Wide = $wide }
 }
 
@@ -70,10 +64,17 @@ try {
     $capture.Dispose()
 }
 
+$interfaces = @{}
+Get-NetIPInterface -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object {
+    $interfaces[[int]$_.InterfaceIndex] = $_.InterfaceAlias
+}
 $udp = @($flows.GetEnumerator() | ForEach-Object {
-    $port = [int]($_.Key -split ':')[-1]
+    $endpoint, $index = $_.Key -split '\|',2
+    $port = [int]($endpoint -split ':')[-1]
+    $interface = $interfaces[[int]$index]
     [pscustomobject]@{
-        Адрес = $_.Key
+        Адрес = $endpoint
+        Интерфейс = if ($interface) { $interface } else { "Индекс $index" }
         Отправлено = $_.Value[0]
         Получено = $_.Value[1]
         ИгровойПорт = ($port -ge 10000 -and $port -le 11000) -or ($port -ge 27015 -and $port -le 27140)
@@ -92,15 +93,15 @@ $lines = @(
 if (-not $gameUdp.Count) {
     $lines += 'За время записи не видно исходящих пакетов Apex на игровых портах UDP.'
 } else {
-    $lines += "Игровой UDP: с ответом $($withReply.Count), без ответа $($noReply.Count)."
+    $lines += "Игровой UDP по интерфейсам: с ответом $($withReply.Count), без ответа $($noReply.Count)."
     if ($noReply.Count) {
         $flow = $noReply[0]
-        $lines += "Больше всего пакетов без ответа: $($flow.Адрес), отправлено $($flow.Отправлено)."
+        $lines += "Больше всего пакетов без ответа: $($flow.Адрес) через $($flow.Интерфейс), отправлено $($flow.Отправлено)."
     }
 }
 if ($udp.Count) {
     $lines += '', 'IPv4 UDP'
-    $lines += ($udp | Select-Object -First 40 Адрес,Отправлено,Получено |
+    $lines += ($udp | Select-Object -First 40 Адрес,Интерфейс,Отправлено,Получено |
         Format-Table -AutoSize | Out-String -Width 160).TrimEnd()
     if ($udp.Count -gt 40) { $lines += "Ещё адресов в записи: $($udp.Count - 40)." }
 }

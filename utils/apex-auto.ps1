@@ -3,19 +3,30 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $taskName = 'Zapret Apex Auto IP'
-$base = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'Zapret Game Profiles'
+$programFiles = [Environment]::GetFolderPath('ProgramFiles')
+$base = Join-Path $programFiles 'Zapret Apex'
+$legacyDir = Join-Path $programFiles 'Zapret Game Profiles\Apex Auto'
+$legacyWorker = Join-Path $legacyDir 'apex-auto-worker.ps1'
+$legacyFlag = Join-Path $legacyDir 'apex-auto.enabled'
 $workerDir = Join-Path $base 'Apex Auto'
 $worker = Join-Path $workerDir 'apex-auto-worker.ps1'
 $flag = Join-Path $workerDir 'apex-auto.enabled'
 $ready = "$flag.ready"
 $launchArgs = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' +
     $worker + '" -InstallRoot "' + $root + '"'
+$legacyArgs = $launchArgs.Replace($worker,$legacyWorker)
 . "$PSScriptRoot\service-state.ps1"
 
 function Test-AutoEnabled {
     $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
     return ($task.Actions.Arguments -ceq $launchArgs) -and ($task.State -ne 'Disabled') -and
         (Test-Path -LiteralPath $flag -PathType Leaf)
+}
+
+function Test-LegacyEnabled {
+    $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    return ($task.Actions.Arguments -ceq $legacyArgs) -and ($task.State -ne 'Disabled') -and
+        (Test-Path -LiteralPath $legacyFlag -PathType Leaf)
 }
 
 function Protect-ApexPath([string]$Path, [bool]$Directory) {
@@ -39,26 +50,27 @@ function Protect-ApexPath([string]$Path, [bool]$Directory) {
 }
 
 function Clear-ApexAutoLists {
-    foreach ($name in 'ipset-apex-auto-game.txt','ipset-apex-auto-sdr.txt') {
-        $path = Join-Path $workerDir $name
-        if (Test-Path -LiteralPath $path -PathType Leaf) {
-            $tmp = "$path.$([guid]::NewGuid().ToString('N'))"
-            try {
-                [IO.File]::WriteAllLines($tmp, [string[]]@('192.0.2.1'), [Text.Encoding]::ASCII)
-                [IO.File]::Replace($tmp,$path,"$tmp.bak")
-            } finally { Remove-Item -LiteralPath $tmp,"$tmp.bak" -ErrorAction SilentlyContinue }
-        } else {
-            [IO.File]::WriteAllLines($path, [string[]]@('192.0.2.1'), [Text.Encoding]::ASCII)
-        }
+    $path = Join-Path $workerDir 'ipset-apex-auto-match.txt'
+    if (Test-Path -LiteralPath $path -PathType Leaf) {
+        $tmp = "$path.$([guid]::NewGuid().ToString('N'))"
+        try {
+            [IO.File]::WriteAllLines($tmp, [string[]]@('192.0.2.1'), [Text.Encoding]::ASCII)
+            [IO.File]::Replace($tmp,$path,"$tmp.bak")
+        } finally { Remove-Item -LiteralPath $tmp,"$tmp.bak" -ErrorAction SilentlyContinue }
+    } else {
+        [IO.File]::WriteAllLines($path, [string[]]@('192.0.2.1'), [Text.Encoding]::ASCII)
     }
 }
 
 function Stop-ApexAutoTask([switch]$KeepRegistered) {
     $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-    if ($task -and -not $task.Actions.Arguments.Contains('-File "' + $worker + '" -InstallRoot "')) {
-        throw 'Имя задачи автоподбора Apex уже занято.'
+    $arguments = [string]$task.Actions.Arguments
+    $isLegacy = $arguments.Contains('-File "' + $legacyWorker + '" -InstallRoot "')
+    if ($task -and -not $isLegacy -and -not $arguments.Contains('-File "' + $worker + '" -InstallRoot "')) {
+        throw 'Имя задачи помощника Apex уже занято.'
     }
-    if (Test-Path -LiteralPath $flag -PathType Leaf) { Remove-Item -LiteralPath $flag }
+    $activeFlag = if ($isLegacy) { $legacyFlag } else { $flag }
+    if (Test-Path -LiteralPath $activeFlag -PathType Leaf) { Remove-Item -LiteralPath $activeFlag }
     if (-not $task) { return }
     $deadline = [DateTime]::UtcNow.AddSeconds(6)
     while ($task.State -eq 'Running' -and [DateTime]::UtcNow -lt $deadline) {
@@ -108,18 +120,68 @@ function Sync-ApexAutoWorker {
     }
 }
 
+function Initialize-ApexHelper {
+    foreach ($dir in $base,$workerDir) {
+        if (-not (Test-Path -LiteralPath $dir -PathType Container)) { New-Item -ItemType Directory -Path $dir | Out-Null }
+        Protect-ApexPath $dir $true
+    }
+    foreach ($name in 'apex-auto-worker.ps1','service-state.ps1') {
+        $from = Join-Path $PSScriptRoot $name
+        $to = Join-Path $workerDir $name
+        if ((Test-Path -LiteralPath $to) -and ((Get-Item -LiteralPath $to -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw 'Файл помощника Apex перенаправлен.'
+        }
+        Copy-Item -LiteralPath $from -Destination $to -Force
+        Protect-ApexPath $to $false
+    }
+    Clear-ApexAutoLists
+}
+
+function Complete-ApexHelperMigration {
+    $previousAction = (Get-ScheduledTask -TaskName $taskName).Actions
+    try {
+        Stop-ApexAutoTask -KeepRegistered
+        $powershell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+        $action = New-ScheduledTaskAction -Execute $powershell -Argument $launchArgs
+        Set-ScheduledTask -TaskName $taskName -Action $action | Out-Null
+        New-Item -ItemType File -Path $flag -Force | Out-Null
+        Start-ApexAutoWorker
+    } catch {
+        $failure = $_
+        Stop-ApexAutoTask -KeepRegistered
+        Set-ScheduledTask -TaskName $taskName -Action $previousAction | Out-Null
+        New-Item -ItemType File -Path $legacyFlag -Force | Out-Null
+        Start-ScheduledTask -TaskName $taskName
+        throw $failure
+    }
+}
+
 switch ($Action) {
     'Sync' {
-        if (Test-AutoEnabled) { Sync-ApexAutoWorker }
+        if ((Test-LegacyEnabled) -and (Get-ZapretService).Command -like "*$workerDir\ipset-apex-auto-match.txt*") {
+            Complete-ApexHelperMigration
+        } elseif (Test-AutoEnabled) { Sync-ApexAutoWorker }
         return
     }
-    'Status' { return (Test-AutoEnabled) }
+    'Status' { return ((Test-AutoEnabled) -or (Test-LegacyEnabled)) }
     'ListFolder' {
         if (Test-AutoEnabled) { return $workerDir }
+        if (Test-LegacyEnabled) {
+            Initialize-ApexHelper
+            foreach ($name in 'apex-auto-decisions.log','apex-auto-decisions.log.old','apex-auto.log') {
+                $from = Join-Path $legacyDir $name
+                $to = Join-Path $workerDir $name
+                if ((Test-Path -LiteralPath $from -PathType Leaf) -and -not (Test-Path -LiteralPath $to)) {
+                    Copy-Item -LiteralPath $from -Destination $to
+                }
+            }
+            return $workerDir
+        }
         return (Join-Path $root 'lists')
     }
     'Disable' {
         if (Test-AutoEnabled) { Stop-ApexAutoTask; Clear-ApexAutoLists }
+        elseif (Test-LegacyEnabled) { Stop-ApexAutoTask }
         return
     }
 }
@@ -130,21 +192,8 @@ if ($service.Status -ne 'Running' -or $service.Profile -ne 'Apex' -or -not (Test
 }
 if (Test-AutoEnabled) { return }
 
-foreach ($dir in $base,$workerDir) {
-    if (-not (Test-Path -LiteralPath $dir -PathType Container)) { New-Item -ItemType Directory -Path $dir | Out-Null }
-    Protect-ApexPath $dir $true
-}
 Stop-ApexAutoTask
-foreach ($name in 'apex-auto-worker.ps1','service-state.ps1') {
-    $from = Join-Path $PSScriptRoot $name
-    $to = Join-Path $workerDir $name
-    if ((Test-Path -LiteralPath $to) -and ((Get-Item -LiteralPath $to -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-        throw 'Файл автоподбора Apex перенаправлен.'
-    }
-    Copy-Item -LiteralPath $from -Destination $to -Force
-    Protect-ApexPath $to $false
-}
-Clear-ApexAutoLists
+Initialize-ApexHelper
 Remove-Item -LiteralPath $ready -ErrorAction SilentlyContinue
 try {
     $account = [Security.Principal.WindowsIdentity]::GetCurrent().Name

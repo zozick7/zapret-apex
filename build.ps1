@@ -47,7 +47,7 @@ foreach ($file in Get-ChildItem -LiteralPath (Join-Path $stage 'profiles') -Filt
     foreach ($match in [regex]::Matches($contents, '%LISTS%([A-Za-z0-9_.-]+)')) {
         $name = $match.Groups[1].Value
         if (-not (Test-Path -LiteralPath (Join-Path (Join-Path $stage 'lists') $name) -PathType Leaf) -and
-            $name -notin @('list-general-user.txt','list-exclude-user.txt','ipset-exclude-user.txt')) {
+            $name -notin @('list-general-user.txt','list-exclude-user.txt','ipset-exclude-user.txt','ipset-apex-sdr.txt')) {
             throw "Missing $name referenced by $($file.Name)."
         }
     }

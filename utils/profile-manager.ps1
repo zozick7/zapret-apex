@@ -145,8 +145,7 @@ if ($Action -eq 'Repair' -and -not $installed) {
     return
 }
 function Sync-ApexHelper {
-    try { & "$PSScriptRoot\apex-auto.ps1" -Action Sync }
-    catch { Write-Warning "Не удалось обновить помощника Apex. $($_.Exception.Message)" }
+    & "$PSScriptRoot\apex-auto.ps1" -Action Sync
 }
 
 $startMode = if ($KeepStopped -and $installed.Start -ne 2) { 'Manual' } else { 'Automatic' }
@@ -187,6 +186,7 @@ try {
         Wait-ZapretService Running
     }
     New-ItemProperty -LiteralPath $registry -Name 'ZozickProfile' -Value $Profile -PropertyType String -Force | Out-Null
+    Sync-ApexHelper
 } catch {
     $failure = $_
     try {
@@ -198,6 +198,9 @@ try {
             & "$env:SystemRoot\System32\sc.exe" delete $serviceName | Out-Null
         } elseif ($updated) {
             Set-ZapretServiceConfig $installed.Command ([uint32]$installed.Start)
+            if ($installed.Managed) {
+                New-ItemProperty -LiteralPath $registry -Name 'ZozickProfile' -Value $installed.Profile -PropertyType String -Force | Out-Null
+            }
         }
         if ($wasRunning) { Start-Service -Name $serviceName }
     } catch {
@@ -211,5 +214,4 @@ try {
 } catch {
     Write-Warning "The service is running. Could not register login updates. $($_.Exception.Message)"
 }
-Sync-ApexHelper
 Write-Host "Для службы Zapret выбран профиль $Profile."

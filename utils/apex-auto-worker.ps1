@@ -6,10 +6,7 @@ $runtime = $PSScriptRoot
 $enabled = Join-Path $runtime 'apex-auto.enabled'
 $lockPath = Join-Path $runtime 'apex-auto.lock'
 $log = Join-Path $runtime 'apex-auto.log'
-$matchLists = @(
-    (Join-Path $runtime 'ipset-apex-auto-game.txt')
-    (Join-Path $runtime 'ipset-apex-auto-sdr.txt')
-)
+$matchList = Join-Path $runtime 'ipset-apex-auto-match.txt'
 # An empty include list matches everything in winws. Keep a non-routable address.
 $placeholder = '192.0.2.1'
 . "$PSScriptRoot\service-state.ps1"
@@ -52,14 +49,13 @@ function Write-ApexAutoList([string]$Path, [string[]]$Addresses) {
 
 function Set-ApexMatchRules([bool]$Enabled) {
     $addresses = if ($Enabled) { '0.0.0.0/1', '128.0.0.0/1' } else { @() }
-    foreach ($path in $matchLists) { Write-ApexAutoList $path @($addresses) }
+    Write-ApexAutoList $matchList @($addresses)
 }
 
 function Test-ApexAutoService {
     $service = Get-ZapretService
     return $service.Status -eq 'Running' -and $service.Profile -eq 'Apex' -and
-        (Test-ZapretOwner $service $InstallRoot) -and $service.Command.Contains($matchLists[0]) -and
-        $service.Command.Contains($matchLists[1])
+        (Test-ZapretOwner $service $InstallRoot) -and $service.Command.Contains($matchList)
 }
 
 $lock = Open-AutoLock

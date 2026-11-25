@@ -80,7 +80,8 @@ public sealed class ApexUdpCapture : IDisposable
             int remoteIpOffset = outbound ? 16 : 12;
             var remoteIp = new IPAddress(new byte[] { packet[remoteIpOffset], packet[remoteIpOffset + 1],
                 packet[remoteIpOffset + 2], packet[remoteIpOffset + 3] });
-            string endpoint = remoteIp + ":" + remotePort;
+            uint interfaceIndex = BitConverter.ToUInt32(address, 16);
+            string endpoint = remoteIp + ":" + remotePort + "|" + interfaceIndex;
             lock (flows)
             {
                 int[] counts;
