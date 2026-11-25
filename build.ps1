@@ -56,6 +56,13 @@ foreach ($file in $packages | Sort-Object -Unique) {
     Copy-Item -LiteralPath (Join-Path (Join-Path $base 'bin') $file) -Destination (Join-Path $stage 'bin')
 }
 
+$bin = Join-Path $stage 'bin'
+$hashes = [ordered]@{}
+foreach ($name in $packages | Sort-Object -Unique) {
+    $hashes[$name] = (Get-FileHash -LiteralPath (Join-Path $bin $name) -Algorithm SHA256).Hash
+}
+$hashes | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $bin 'hashes.json') -Encoding ASCII
+
 # Compare the bundled engine with bol-van's published x64 checksum.
 $winwsHash = 'affb4f69d2ea302a7abccd5325d81826e140ddae014f1e070bc4a6c0dd555188'
 $winws = Join-Path $stage 'bin\winws.exe'

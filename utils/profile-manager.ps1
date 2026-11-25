@@ -14,6 +14,7 @@ $lists = Join-Path $root 'lists'
 $serviceName = 'zapret'
 $registry = 'HKLM:\SYSTEM\CurrentControlSet\Services\zapret'
 . "$PSScriptRoot\service-state.ps1"
+. "$PSScriptRoot\service-storage.ps1"
 $installed = Get-ZapretService
 if ($installed -and $Action -ne 'Start') {
     if (-not $installed.Executable) { throw 'Windows не вернула путь к службе Zapret. Проверь права доступа к службе.' }
@@ -41,6 +42,7 @@ if ($Action -eq 'Remove') {
     }
     & "$PSScriptRoot\apex-auto.ps1" -Action Disable
     & "$PSScriptRoot\apex-maintenance.ps1" -Action Remove
+    Remove-ZapretRuntime $installed.RuntimeRoot
     return
 }
 
@@ -90,128 +92,175 @@ function Restore-RequiredLists {
     }
 }
 
-Restore-RequiredLists
-if ($Profile -eq 'Apex' -and $Action -in 'Start','Repair') {
-    & "$PSScriptRoot\apex-maintenance.ps1" -Action Refresh
+if ($Action -eq 'Start') {
+    Restore-RequiredLists
+    if ($Profile -eq 'Apex') { & "$PSScriptRoot\apex-maintenance.ps1" -Action Refresh }
 }
 $template = Join-Path (Join-Path $root 'profiles') "$Profile.args"
 if (-not (Test-Path -LiteralPath $template -PathType Leaf)) { throw "Profile $Profile was not found." }
 $options = [IO.File]::ReadAllText($template)
-if ($Profile -eq 'Apex') {
-    if ($Action -eq 'Install') {
-        # Stop the session-only worker from v1.1.14 during an in-place upgrade.
-        Remove-Item -LiteralPath (Join-Path $root '.runtime\apex-auto.enabled') -ErrorAction SilentlyContinue
-    }
-    $autoLists = & "$PSScriptRoot\apex-auto.ps1" -Action ListFolder
-    $options = $options.Replace('%LISTS%ipset-apex-auto-',"$autoLists\ipset-apex-auto-")
-}
-$options = $options.Replace('%BIN%',"$bin\").Replace('%LISTS%',"$lists\")
-$arguments = (($options -split '\r?\n') | ForEach-Object { $_.Trim() } | Where-Object { $_ }) -join ' '
-$binaryPath = '"' + $exe + '" ' + $arguments
-if ($arguments -notmatch '^--wf-' -or $binaryPath.Length -gt 30000) {
-    throw 'The Winws profile is missing filter options or exceeds the command-line limit.'
+if ($Action -ne 'Start' -and ($options -match '[\\]|[a-z]:/|\.\./|(?:^|[="\s])/' -or
+    $options -match '(?:^|\s)(?:@|--(?:debug|hostlist-auto|wf-save)(?:=|\s|$))')) {
+    throw 'Для файлов профиля службы используй %BIN% и %LISTS% без внешних путей.'
 }
 
-if ($Action -eq 'Start') {
-    $blocker = Get-ZapretManualStartBlocker (Get-ZapretService)
-    if ($blocker) { throw $blocker }
-    $process = Start-Process -FilePath $exe -WorkingDirectory $bin -ArgumentList $arguments -NoNewWindow -PassThru -Wait
-    if ($process.ExitCode -ne 0) { throw "Winws stopped with exit code $($process.ExitCode)." }
-    return
-}
-
-$runtime = Join-Path $root '.runtime'
-New-Item -ItemType Directory -Path $runtime -Force | Out-Null
-$check = Join-Path $runtime ('check-' + [guid]::NewGuid().ToString('N'))
-$stdout = "$check.out"
-$stderr = "$check.err"
+$stage = $null
+$keepStage = $false
+$serviceLock = $null
 try {
-    # Winws saves the generated filter and exits before checking for another instance.
-    $validationArgs = "$arguments --dry-run --wf-save=/dev/null"
-    $validation = Start-Process -FilePath $exe -WorkingDirectory $bin -ArgumentList $validationArgs -NoNewWindow -PassThru -Wait -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-    if ($validation.ExitCode -ne 0) {
-        $detail = @(Get-Content -LiteralPath $stderr | Where-Object { $_.Trim() } | Select-Object -Last 3)
-        if (-not $detail.Count) {
-            $detail = @(Get-Content -LiteralPath $stdout | Where-Object { $_.Trim() } | Select-Object -Last 3)
+    if ($Action -ne 'Start') {
+        $protected = Get-ZapretProtectedRoot
+        New-ZapretProtectedDirectory $protected
+        $serviceLock = [IO.File]::Open((Join-Path $protected 'service.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
+        $installed = Get-ZapretService
+        if ($installed -and -not ((Test-ZapretOwner $installed $root) -or (Test-ZapretManagedService $installed))) {
+            throw 'Служба уже принадлежит другой сборке Zapret.'
         }
-        throw ("Winws не принял профиль $Profile (код $($validation.ExitCode)). " + ($detail -join ' '))
-    }
-} finally {
-    Remove-Item -LiteralPath $stdout,$stderr -ErrorAction SilentlyContinue
-}
-
-if ($Action -eq 'Repair' -and -not $installed) {
-    Write-Host 'Profile checked. Use Install to enable the service.'
-    return
-}
-function Sync-ApexHelper {
-    & "$PSScriptRoot\apex-auto.ps1" -Action Sync
-}
-
-$startMode = if ($KeepStopped -and $installed.Start -ne 2) { 'Manual' } else { 'Automatic' }
-$startValue = if ($startMode -eq 'Automatic') { 2 } else { 3 }
-if ($installed -and $installed.Status -eq 'Running' -and $installed.Start -eq $startValue -and
-    $installed.Command -ceq $binaryPath -and -not $KeepStopped) {
-    Sync-ApexHelper
-    Write-Host "Профиль $Profile уже запущен."
-    return
-}
-
-$servicePid = 0
-if ($installed -and $installed.Status -ne 'Stopped') {
-    $servicePid = (Get-CimInstance Win32_Service -Filter "Name='zapret'" -ErrorAction SilentlyContinue).ProcessId
-}
-if (Get-Process -Name winws -ErrorAction SilentlyContinue | Where-Object Id -ne $servicePid) {
-    throw 'Сначала закрой окно Zapret, запущенного вручную.'
-}
-
-$created = $false
-$updated = $false
-$wasRunning = $false
-try {
-    if ($installed) {
-        $wasRunning = $installed.Status -ne 'Stopped'
-        if ($wasRunning) {
-            Stop-Service -Name $serviceName
-            Wait-ZapretService Stopped
-        }
-        Set-ZapretServiceConfig $binaryPath $startValue
-        $updated = $true
-    } else {
-        New-Service -Name $serviceName -BinaryPathName $binaryPath -DisplayName 'Zapret' -Description 'Local game profiles based on Flowseal' -StartupType $startMode | Out-Null
-        $created = $true
-    }
-    if (-not $KeepStopped) {
-        Start-Service -Name $serviceName
-        Wait-ZapretService Running
-    }
-    New-ItemProperty -LiteralPath $registry -Name 'ZozickProfile' -Value $Profile -PropertyType String -Force | Out-Null
-    Sync-ApexHelper
-} catch {
-    $failure = $_
-    try {
-        if ($created -or $updated) {
-            Stop-Service -Name $serviceName
-            Wait-ZapretService Stopped
-        }
-        if ($created) {
-            & "$env:SystemRoot\System32\sc.exe" delete $serviceName | Out-Null
-        } elseif ($updated) {
-            Set-ZapretServiceConfig $installed.Command ([uint32]$installed.Start)
-            if ($installed.Managed) {
-                New-ItemProperty -LiteralPath $registry -Name 'ZozickProfile' -Value $installed.Profile -PropertyType String -Force | Out-Null
+        $stage = Join-Path $protected ('service-' + [guid]::NewGuid().ToString('N'))
+        New-ZapretProtectedDirectory $stage
+        Copy-ZapretRuntime $root $stage
+        $bin = Join-Path $stage 'bin'
+        $exe = Join-Path $bin 'winws.exe'
+        $lists = Join-Path $stage 'lists'
+        if ($installed.RuntimeRoot) {
+            $previousRelay = Join-Path $installed.RuntimeRoot 'lists\ipset-apex-sdr.txt'
+            $relay = Join-Path $lists 'ipset-apex-sdr.txt'
+            $previousLine = Get-Content -LiteralPath $previousRelay -TotalCount 1 -ErrorAction SilentlyContinue
+            $currentLine = Get-Content -LiteralPath $relay -TotalCount 1 -ErrorAction SilentlyContinue
+            if ($previousLine -match '^# revision: (\d+)$') {
+                $previousRevision = [long]$Matches[1]
+                if ($currentLine -notmatch '^# revision: (\d+)$' -or $previousRevision -gt [long]$Matches[1]) {
+                    [IO.File]::Copy($previousRelay,$relay,$true)
+                }
             }
         }
-        if ($wasRunning) { Start-Service -Name $serviceName }
-    } catch {
-        Write-Warning "Could not restore the previous service state. $($_.Exception.Message)"
+        Restore-RequiredLists
+        if ($Profile -eq 'Apex') { & "$stage\utils\apex-maintenance.ps1" -Action Refresh }
     }
-    throw $failure
-}
+    if ($Profile -eq 'Apex') {
+        if ($Action -eq 'Install') {
+            # Stop the session-only worker from v1.1.14 during an in-place upgrade.
+            Remove-Item -LiteralPath (Join-Path $root '.runtime\apex-auto.enabled') -ErrorAction SilentlyContinue
+        }
+        $autoLists = & "$PSScriptRoot\apex-auto.ps1" -Action ListFolder
+        if ($stage -and $autoLists -eq (Join-Path $root 'lists')) { $autoLists = $lists }
+        $options = $options.Replace('%LISTS%ipset-apex-auto-',"$autoLists\ipset-apex-auto-")
+    }
+    $options = $options.Replace('%BIN%',"$bin\").Replace('%LISTS%',"$lists\")
+    $arguments = (($options -split '\r?\n') | ForEach-Object { $_.Trim() } | Where-Object { $_ }) -join ' '
+    $binaryPath = '"' + $exe + '" ' + $arguments
+    if ($arguments -notmatch '^--wf-' -or $binaryPath.Length -gt 30000) {
+        throw 'The Winws profile is missing filter options or exceeds the command-line limit.'
+    }
 
-try {
-    & "$PSScriptRoot\apex-maintenance.ps1" -Action Install
-} catch {
-    Write-Warning "The service is running. Could not register login updates. $($_.Exception.Message)"
+    if ($Action -eq 'Start') {
+        $blocker = Get-ZapretManualStartBlocker (Get-ZapretService)
+        if ($blocker) { throw $blocker }
+        $process = Start-Process -FilePath $exe -WorkingDirectory $bin -ArgumentList $arguments -NoNewWindow -PassThru -Wait
+        if ($process.ExitCode -ne 0) { throw "Winws stopped with exit code $($process.ExitCode)." }
+        return
+    }
+
+    $check = Join-Path $stage ('check-' + [guid]::NewGuid().ToString('N'))
+    $stdout = "$check.out"
+    $stderr = "$check.err"
+    try {
+        # Winws saves the generated filter and exits before checking for another instance.
+        $validationArgs = "$arguments --dry-run --wf-save=/dev/null"
+        $validation = Start-Process -FilePath $exe -WorkingDirectory $bin -ArgumentList $validationArgs -NoNewWindow -PassThru -Wait -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+        if ($validation.ExitCode -ne 0) {
+            $detail = @(Get-Content -LiteralPath $stderr | Where-Object { $_.Trim() } | Select-Object -Last 3)
+            if (-not $detail.Count) {
+                $detail = @(Get-Content -LiteralPath $stdout | Where-Object { $_.Trim() } | Select-Object -Last 3)
+            }
+            throw ("Winws не принял профиль $Profile (код $($validation.ExitCode)). " + ($detail -join ' '))
+        }
+    } finally {
+        Remove-Item -LiteralPath $stdout,$stderr -ErrorAction SilentlyContinue
+    }
+
+    if ($Action -eq 'Repair' -and -not $installed) {
+        Write-Host 'Profile checked. Use Install to enable the service.'
+        return
+    }
+    function Sync-ApexHelper {
+        & "$PSScriptRoot\apex-auto.ps1" -Action Sync
+    }
+
+    $startMode = if ($KeepStopped -and $installed.Start -ne 2) { 'Manual' } else { 'Automatic' }
+    $startValue = if ($startMode -eq 'Automatic') { 2 } else { 3 }
+
+    $servicePid = 0
+    if ($installed -and $installed.Status -ne 'Stopped') {
+        $servicePid = (Get-CimInstance Win32_Service -Filter "Name='zapret'" -ErrorAction SilentlyContinue).ProcessId
+    }
+    if (Get-Process -Name winws -ErrorAction SilentlyContinue | Where-Object Id -ne $servicePid) {
+        throw 'Сначала закрой окно Zapret, запущенного вручную.'
+    }
+
+    $created = $false
+    $updated = $false
+    $wasRunning = $false
+    try {
+        if ($installed) {
+            $wasRunning = $installed.Status -ne 'Stopped'
+            if ($wasRunning) {
+                Stop-Service -Name $serviceName
+                Wait-ZapretService Stopped
+            }
+            Set-ZapretServiceConfig $binaryPath $startValue
+            $updated = $true
+        } else {
+            New-Service -Name $serviceName -BinaryPathName $binaryPath -DisplayName 'Zapret' -Description 'Local game profiles based on Flowseal' -StartupType $startMode | Out-Null
+            $created = $true
+        }
+        New-ItemProperty -LiteralPath $registry -Name 'ZozickInstallRoot' -Value $root -PropertyType String -Force | Out-Null
+        if (-not $KeepStopped) {
+            Start-Service -Name $serviceName
+            Wait-ZapretService Running
+        }
+        New-ItemProperty -LiteralPath $registry -Name 'ZozickProfile' -Value $Profile -PropertyType String -Force | Out-Null
+        Sync-ApexHelper
+    } catch {
+        $failure = $_
+        try {
+            if ($created -or $updated) {
+                Stop-Service -Name $serviceName
+                Wait-ZapretService Stopped
+            }
+            if ($created) {
+                & "$env:SystemRoot\System32\sc.exe" delete $serviceName | Out-Null
+            } elseif ($updated) {
+                Set-ZapretServiceConfig $installed.Command ([uint32]$installed.Start)
+                if ($installed.InstallRoot) {
+                    New-ItemProperty -LiteralPath $registry -Name 'ZozickInstallRoot' -Value $installed.InstallRoot -PropertyType String -Force | Out-Null
+                } else {
+                    Remove-ItemProperty -LiteralPath $registry -Name 'ZozickInstallRoot' -ErrorAction SilentlyContinue
+                }
+                if ($installed.Managed) {
+                    New-ItemProperty -LiteralPath $registry -Name 'ZozickProfile' -Value $installed.Profile -PropertyType String -Force | Out-Null
+                }
+            }
+            if ($wasRunning) { Start-Service -Name $serviceName }
+        } catch {
+            $keepStage = $true
+            Write-Warning "Could not restore the previous service state. $($_.Exception.Message)"
+        }
+        throw $failure
+    }
+
+    $keepStage = $true
+    try {
+        & "$stage\utils\apex-maintenance.ps1" -Action Install
+        Remove-ZapretRuntime $installed.RuntimeRoot
+    } catch {
+        Write-Warning "Не удалось завершить перенос служебных файлов. $($_.Exception.Message)"
+    }
+    Write-Host "Для службы Zapret выбран профиль $Profile."
+} finally {
+    try {
+        if ($stage -and -not $keepStage -and (Test-Path -LiteralPath $stage)) { Remove-ZapretRuntime $stage }
+    } finally {
+        if ($serviceLock) { $serviceLock.Dispose() }
+    }
 }
-Write-Host "Для службы Zapret выбран профиль $Profile."

@@ -26,10 +26,15 @@ if ($asset.Count -ne 1 -or $asset[0].browser_download_url -ine $expectedUrl -or
     throw 'Не удалось проверить архив обновления на GitHub.'
 }
 $expectedHash = $Matches[1]
-$updates = Join-Path $env:LOCALAPPDATA 'ZapretGameProfiles\updates'
+. "$PSScriptRoot\service-state.ps1"
+. "$PSScriptRoot\service-storage.ps1"
+$protected = Get-ZapretProtectedRoot
+New-ZapretProtectedDirectory $protected
+$updates = Join-Path $protected 'Updates'
+New-ZapretProtectedDirectory $updates
 $folder = Join-Path $updates $tag
 $zip = Join-Path $folder $assetName
-New-Item -ItemType Directory -Path $folder -Force | Out-Null
+New-ZapretProtectedDirectory $folder
 if (-not (Test-Path -LiteralPath $zip -PathType Leaf) -or
     (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash -ine $expectedHash) {
     $temp = "$zip.$([guid]::NewGuid().ToString('N')).part"

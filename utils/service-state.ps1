@@ -1,4 +1,8 @@
-﻿function Get-ZapretService {
+﻿function Get-ZapretProtectedRoot {
+    Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'Zapret Apex'
+}
+
+function Get-ZapretService {
     $controller = Get-Service -Name zapret -ErrorAction SilentlyContinue
     if (-not $controller) { return }
     $config = Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\zapret' -ErrorAction SilentlyContinue
@@ -8,10 +12,18 @@
     elseif ($command -match '^\s*(.+?\.exe)(?=\s|$)') { $exe = $Matches[1] }
     $profile = [string]$config.ZozickProfile
     if (-not $profile -and $config.'zapret-discord-youtube' -eq 'general (ALT11)') { $profile = 'ALT11' }
+    $exe = [Environment]::ExpandEnvironmentVariables([string]$exe)
+    $runtime = $null
+    $prefix = [regex]::Escape((Get-ZapretProtectedRoot))
+    if ($exe -match "^($prefix\\service-[0-9a-f]{32})\\bin\\winws\.exe$") {
+        $runtime = $Matches[1]
+    }
     [pscustomobject]@{
         Status = [string]$controller.Status
         Command = $command
-        Executable = [Environment]::ExpandEnvironmentVariables([string]$exe)
+        Executable = $exe
+        RuntimeRoot = $runtime
+        InstallRoot = [string]$config.ZozickInstallRoot
         Profile = $profile
         Managed = [string]$config.ZozickProfile -match '^[a-zA-Z][a-zA-Z0-9_-]{0,31}$'
         Start = $config.Start
@@ -20,6 +32,7 @@
 
 function Test-ZapretOwner($Service, [string]$Root) {
     if (-not $Service.Executable) { return $false }
+    if ($Service.RuntimeRoot) { return $Service.InstallRoot -ieq $Root }
     $expected = Join-Path $Root 'bin\winws.exe'
     return $Service.Executable -ieq $expected
 }

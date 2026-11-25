@@ -4,19 +4,23 @@
 )
 
 $ErrorActionPreference = 'Stop'
+$env:PSModulePath = Join-Path $PSHOME 'Modules'
+. "$PSScriptRoot\service-state.ps1"
 $taskName = 'Zapret Apex Maintenance'
 $root = Split-Path -Parent $PSScriptRoot
 
 if ($Action -eq 'Install') {
     $account = [Security.Principal.WindowsIdentity]::GetCurrent().Name
     $powershell = Join-Path $PSHOME 'powershell.exe'
-    $arguments = '-NoLogo -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' +
+    $arguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' +
         $PSCommandPath + '" -Action Run'
-    $taskAction = New-ScheduledTaskAction -Execute $powershell -Argument $arguments
+    $taskAction = New-ScheduledTaskAction -Execute $powershell -Argument $arguments -WorkingDirectory ([Environment]::SystemDirectory)
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $account
-    $principal = New-ScheduledTaskPrincipal -UserId $account -LogonType Interactive -RunLevel Limited
+    $principal = New-ScheduledTaskPrincipal -UserId $account -LogonType Interactive -RunLevel Highest
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
         -ExecutionTimeLimit (New-TimeSpan -Minutes 2)
+    $previous = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    if ($previous.State -eq 'Running') { Stop-ScheduledTask -InputObject $previous }
     Register-ScheduledTask -TaskName $taskName -Action $taskAction -Trigger $trigger `
         -Principal $principal -Settings $settings -Force | Out-Null
     return
@@ -31,11 +35,13 @@ if ($Action -eq 'Remove') {
 
 function Update-ApexRelays {
     $cache = Join-Path $env:USERPROFILE 'Saved Games\Respawn\Apex\assets\temp\netcfg'
-    if (-not (Test-Path -LiteralPath $cache -PathType Leaf)) { return }
+    $cacheFile = Get-Item -LiteralPath $cache -ErrorAction SilentlyContinue
+    if (-not $cacheFile -or $cacheFile.PSIsContainer -or $cacheFile.Length -gt 4MB) { return }
 
     $list = Join-Path $root 'lists\ipset-apex-sdr.txt'
     $bundledRevision = 1794268433L
     $currentRevision = $bundledRevision
+    if (-not (Test-Path -LiteralPath $list -PathType Leaf)) { return }
     $firstLine = Get-Content -LiteralPath $list -TotalCount 1
     if ($firstLine -match '^# revision: (\d+)$') { $currentRevision = [long]$Matches[1] }
 
@@ -79,6 +85,11 @@ function Update-ApexRelays {
     } finally {
         Remove-Item -LiteralPath $pending,$backup -ErrorAction SilentlyContinue
     }
+}
+
+if ($Action -eq 'Run') {
+    $service = Get-ZapretService
+    if ($service.RuntimeRoot -ine $root) { return }
 }
 
 try {

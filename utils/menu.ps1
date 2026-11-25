@@ -74,7 +74,7 @@ while ($true) {
     Write-Host ''
     Write-Host "Профиль  $(Get-ProfileLabel $selected)"
     Write-Host "Zapret   $status"
-    $updates = Join-Path $env:LOCALAPPDATA 'ZapretGameProfiles\updates'
+    $updates = Join-Path (Get-ZapretProtectedRoot) 'Updates'
     $ready = Get-Content -LiteralPath (Join-Path $updates 'ready-version.txt') -TotalCount 1 -ErrorAction SilentlyContinue
     if ($ready -match '^v(\d+\.\d+\.\d+)$' -and [version]$Matches[1] -gt [version]$current) {
         $notice = "Доступно $ready"
@@ -152,7 +152,9 @@ while ($true) {
                     Add-MenuMessage 'Сначала включи Zapret.' Yellow
                 } else {
                     if ($service.Profile -eq 'Apex' -and (Test-ZapretOwner $service $root)) {
-                        Invoke-MenuAction { & "$PSScriptRoot\apex-maintenance.ps1" -Action Refresh }
+                        $maintenance = if ($service.RuntimeRoot) { Join-Path $service.RuntimeRoot 'utils\apex-maintenance.ps1' }
+                            else { Join-Path $PSScriptRoot 'apex-maintenance.ps1' }
+                        Invoke-MenuAction { & $maintenance -Action Refresh }
                     }
                     Invoke-MenuAction { & "$PSScriptRoot\network-check.ps1" -Profile $selected }
                 }

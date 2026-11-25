@@ -11,8 +11,11 @@
         throw 'Сначала закрой окно Zapret, запущенного вручную.'
     }
 
-    $data = Join-Path $root '.runtime'
-    New-Item -ItemType Directory -Path $data -Force | Out-Null
+    . "$PSScriptRoot\service-storage.ps1"
+    $protected = Get-ZapretProtectedRoot
+    New-ZapretProtectedDirectory $protected
+    $data = Join-Path $protected 'Updates'
+    New-ZapretProtectedDirectory $data
     $lock = [IO.File]::Open((Join-Path $data 'update.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
     try {
         $installed = Get-Content -LiteralPath (Join-Path $root 'release.json') -Raw | ConvertFrom-Json
@@ -46,9 +49,11 @@
         } finally { $zipFile.Dispose() }
 
         foreach ($required in 'service.bat','release.json','bin/winws.exe','utils/menu.ps1',
-            'utils/profile-manager.ps1','utils/service-state.ps1','profiles/Apex.args') {
+            'utils/profile-manager.ps1','utils/service-state.ps1','utils/service-storage.ps1',
+            'bin/hashes.json','profiles/Apex.args') {
             if ($required -notin $planned) { throw "Release file missing: $required" }
         }
+        New-ZapretProtectedDirectory $stage
         Expand-Archive -LiteralPath $Archive -DestinationPath $stage
         $source = Join-Path $stage 'Zapret-Apex'
         $manifest = Get-Content -LiteralPath (Join-Path $source 'release.json') -Raw | ConvertFrom-Json
@@ -88,7 +93,7 @@
                 if ($file.Existed) { Copy-Item -LiteralPath $file.Backup -Destination $file.Path -Force }
                 elseif (Test-Path -LiteralPath $file.Path) { Remove-Item -LiteralPath $file.Path }
             }
-            if ($wasRunning) { Start-Service -Name zapret }
+            if ($wasRunning -and (Get-ZapretService).Status -ne 'Running') { Start-Service -Name zapret }
             throw $failure
         }
         Write-Host "Установлена версия $Tag. Копия прежних файлов хранится в $backup"

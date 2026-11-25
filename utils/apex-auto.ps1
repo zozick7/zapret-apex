@@ -101,12 +101,20 @@ function Sync-ApexAutoWorker {
     $source = Join-Path $PSScriptRoot 'apex-auto-worker.ps1'
     $target = Get-Item -LiteralPath $worker -Force
     if ($target.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Файл помощника Apex перенаправлен.' }
-    if ((Get-FileHash -LiteralPath $source).Hash -eq (Get-FileHash -LiteralPath $worker).Hash) { return }
+    $sourceState = Join-Path $PSScriptRoot 'service-state.ps1'
+    $workerState = Join-Path $workerDir 'service-state.ps1'
+    if ((Get-Item -LiteralPath $workerState -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw 'Файл помощника Apex перенаправлен.'
+    }
+    if ((Get-FileHash -LiteralPath $source).Hash -eq (Get-FileHash -LiteralPath $worker).Hash -and
+        (Get-FileHash -LiteralPath $sourceState).Hash -eq (Get-FileHash -LiteralPath $workerState).Hash) { return }
     $previous = [IO.File]::ReadAllBytes($worker)
+    $previousState = [IO.File]::ReadAllBytes($workerState)
     Stop-ApexAutoTask -KeepRegistered
     try {
         Clear-ApexAutoLists
         [IO.File]::WriteAllBytes($worker, [IO.File]::ReadAllBytes($source))
+        [IO.File]::WriteAllBytes($workerState, [IO.File]::ReadAllBytes($sourceState))
         New-Item -ItemType File -Path $flag -Force | Out-Null
         Start-ApexAutoWorker
     } catch {
@@ -114,6 +122,7 @@ function Sync-ApexAutoWorker {
         Stop-ApexAutoTask -KeepRegistered
         Clear-ApexAutoLists
         [IO.File]::WriteAllBytes($worker, $previous)
+        [IO.File]::WriteAllBytes($workerState, $previousState)
         New-Item -ItemType File -Path $flag -Force | Out-Null
         Start-ApexAutoWorker
         throw $failure
