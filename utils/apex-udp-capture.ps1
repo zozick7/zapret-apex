@@ -1,4 +1,4 @@
-param([string]$DllPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'bin\WinDivert.dll'))
+﻿param([string]$DllPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'bin\WinDivert.dll'))
 
 $source = @'
 using System;
@@ -35,7 +35,6 @@ public sealed class ApexUdpCapture : IDisposable
     private volatile HashSet<int> apexPorts;
     private readonly Dictionary<string, int[]> flows = new Dictionary<string, int[]>();
     private readonly IntPtr handle;
-    private readonly bool separateLocalPorts;
     private readonly Task<Dictionary<string, int[]>> reader;
     private bool disposed;
 
@@ -48,12 +47,11 @@ public sealed class ApexUdpCapture : IDisposable
             throw new ArgumentException(Marshal.PtrToStringAnsi(error) + " at " + position);
     }
 
-    public ApexUdpCapture(int[] ports, string filter = DefaultFilter, bool separateLocalPorts = false)
+    public ApexUdpCapture(int[] ports)
     {
         SetPorts(ports);
-        this.separateLocalPorts = separateLocalPorts;
         // Observe original traffic before the normal Zapret handle processes it.
-        handle = WinDivertOpen(filter, WinDivertNetworkLayer, separateLocalPorts ? (short)990 : (short)1000, SniffReadOnlyExistingDriver);
+        handle = WinDivertOpen(DefaultFilter, WinDivertNetworkLayer, 1000, SniffReadOnlyExistingDriver);
         if (handle == new IntPtr(-1)) throw new Win32Exception(Marshal.GetLastWin32Error());
         reader = Task.Factory.StartNew<Dictionary<string, int[]>>(ReadPackets, TaskCreationOptions.LongRunning);
     }
@@ -61,17 +59,6 @@ public sealed class ApexUdpCapture : IDisposable
     public void SetPorts(int[] ports)
     {
         apexPorts = new HashSet<int>(ports);
-    }
-
-    public Dictionary<string, int[]> Snapshot()
-    {
-        if (reader.IsFaulted) reader.GetAwaiter().GetResult();
-        var snapshot = new Dictionary<string, int[]>();
-        lock (flows)
-        {
-            foreach (var flow in flows) snapshot.Add(flow.Key, (int[])flow.Value.Clone());
-        }
-        return snapshot;
     }
 
     private Dictionary<string, int[]> ReadPackets()
@@ -94,7 +81,6 @@ public sealed class ApexUdpCapture : IDisposable
             var remoteIp = new IPAddress(new byte[] { packet[remoteIpOffset], packet[remoteIpOffset + 1],
                 packet[remoteIpOffset + 2], packet[remoteIpOffset + 3] });
             string endpoint = remoteIp + ":" + remotePort;
-            if (separateLocalPorts) endpoint += "/" + localPort;
             lock (flows)
             {
                 int[] counts;

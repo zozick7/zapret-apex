@@ -144,10 +144,16 @@ if ($Action -eq 'Repair' -and -not $installed) {
     Write-Host 'Profile checked. Use Install to enable the service.'
     return
 }
+function Sync-ApexHelper {
+    try { & "$PSScriptRoot\apex-auto.ps1" -Action Sync }
+    catch { Write-Warning "Не удалось обновить помощника Apex. $($_.Exception.Message)" }
+}
+
 $startMode = if ($KeepStopped -and $installed.Start -ne 2) { 'Manual' } else { 'Automatic' }
 $startValue = if ($startMode -eq 'Automatic') { 2 } else { 3 }
 if ($installed -and $installed.Status -eq 'Running' -and $installed.Start -eq $startValue -and
     $installed.Command -ceq $binaryPath -and -not $KeepStopped) {
+    Sync-ApexHelper
     Write-Host "Профиль $Profile уже запущен."
     return
 }
@@ -205,4 +211,5 @@ try {
 } catch {
     Write-Warning "The service is running. Could not register login updates. $($_.Exception.Message)"
 }
+Sync-ApexHelper
 Write-Host "Для службы Zapret выбран профиль $Profile."

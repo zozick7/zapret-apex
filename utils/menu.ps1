@@ -100,7 +100,7 @@ while ($true) {
     if ($selected -eq 'Apex') {
         Write-Host '  5  Не пускает в матч'
         $auto = if (& "$PSScriptRoot\apex-auto.ps1" -Action Status) { 'вкл' } else { 'выкл' }
-        Write-Host "  6  Автоподбор IP Apex ($auto)"
+        Write-Host "  6  Помощь при входе в матч ($auto)"
     }
     elseif ($selected -eq 'Rust') { Write-Host '  5  Проверить карту Rust' }
     Write-Host '  0  Выход'
@@ -167,10 +167,10 @@ while ($true) {
                 $script = Join-Path $PSScriptRoot 'apex-auto.ps1'
                 if (& $script -Action Status) {
                     & $script -Action Disable
-                    Add-MenuMessage 'Автоподбор IP выключен.'
+                    Add-MenuMessage 'Помощь Apex выключена.'
                 } else {
                     & $script -Action Enable
-                    Add-MenuMessage 'Автоподбор IP включён. Будет запускаться вместе с Windows.'
+                    Add-MenuMessage 'Помощь Apex включена. Правила действуют, пока Apex открыт.'
                 }
             }
             { $_ -in '4','7' } {

@@ -42,8 +42,9 @@ function Update-ApexRelays {
     # Apex may be replacing its cache while this check is running.
     $data = $null
     try {
-        $data = Get-Content -LiteralPath $cache -Raw -Encoding UTF8 -ErrorAction Stop |
-            ConvertFrom-Json -ErrorAction Stop
+        $raw = Get-Content -LiteralPath $cache -Raw -Encoding UTF8 -ErrorAction Stop
+        if (-not $raw) { return }
+        $data = ($raw -replace '[\x00\s]+\z', '') | ConvertFrom-Json -ErrorAction Stop
     } catch [ArgumentException], [IO.IOException], [Management.Automation.ItemNotFoundException] {
         return
     }

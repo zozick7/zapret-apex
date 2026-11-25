@@ -1,4 +1,4 @@
-﻿param([ValidateSet('Status','Enable','Disable','ListFolder')][string]$Action)
+﻿param([ValidateSet('Status','Enable','Disable','ListFolder','Sync')][string]$Action)
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -53,7 +53,7 @@ function Clear-ApexAutoLists {
     }
 }
 
-function Stop-ApexAutoTask {
+function Stop-ApexAutoTask([switch]$KeepRegistered) {
     $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
     if ($task -and -not $task.Actions.Arguments.Contains('-File "' + $worker + '" -InstallRoot "')) {
         throw 'Имя задачи автоподбора Apex уже занято.'
@@ -74,10 +74,45 @@ function Stop-ApexAutoTask {
         } while ($task.State -eq 'Running' -and [DateTime]::UtcNow -lt $deadline)
         if ($task.State -eq 'Running') { throw 'Автоподбор Apex ещё останавливается.' }
     }
-    if ($task) { Unregister-ScheduledTask -InputObject $task -Confirm:$false }
+    if ($task -and -not $KeepRegistered) { Unregister-ScheduledTask -InputObject $task -Confirm:$false }
+}
+
+function Start-ApexAutoWorker {
+    Remove-Item -LiteralPath $ready -ErrorAction SilentlyContinue
+    Start-ScheduledTask -TaskName $taskName
+    $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    while (-not (Test-Path -LiteralPath $ready) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 200 }
+    if (-not (Test-Path -LiteralPath $ready)) { throw 'Помощь Apex не запустилась.' }
+}
+
+function Sync-ApexAutoWorker {
+    $source = Join-Path $PSScriptRoot 'apex-auto-worker.ps1'
+    $target = Get-Item -LiteralPath $worker -Force
+    if ($target.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Файл помощника Apex перенаправлен.' }
+    if ((Get-FileHash -LiteralPath $source).Hash -eq (Get-FileHash -LiteralPath $worker).Hash) { return }
+    $previous = [IO.File]::ReadAllBytes($worker)
+    Stop-ApexAutoTask -KeepRegistered
+    try {
+        Clear-ApexAutoLists
+        [IO.File]::WriteAllBytes($worker, [IO.File]::ReadAllBytes($source))
+        New-Item -ItemType File -Path $flag -Force | Out-Null
+        Start-ApexAutoWorker
+    } catch {
+        $failure = $_
+        Stop-ApexAutoTask -KeepRegistered
+        Clear-ApexAutoLists
+        [IO.File]::WriteAllBytes($worker, $previous)
+        New-Item -ItemType File -Path $flag -Force | Out-Null
+        Start-ApexAutoWorker
+        throw $failure
+    }
 }
 
 switch ($Action) {
+    'Sync' {
+        if (Test-AutoEnabled) { Sync-ApexAutoWorker }
+        return
+    }
     'Status' { return (Test-AutoEnabled) }
     'ListFolder' {
         if (Test-AutoEnabled) { return $workerDir }
@@ -100,8 +135,8 @@ foreach ($dir in $base,$workerDir) {
     Protect-ApexPath $dir $true
 }
 Stop-ApexAutoTask
-foreach ($name in 'apex-auto-worker.ps1','apex-udp-capture.ps1','service-state.ps1','WinDivert.dll') {
-    $from = if ($name -eq 'WinDivert.dll') { Join-Path $root "bin\$name" } else { Join-Path $PSScriptRoot $name }
+foreach ($name in 'apex-auto-worker.ps1','service-state.ps1') {
+    $from = Join-Path $PSScriptRoot $name
     $to = Join-Path $workerDir $name
     if ((Test-Path -LiteralPath $to) -and ((Get-Item -LiteralPath $to -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
         throw 'Файл автоподбора Apex перенаправлен.'
@@ -122,10 +157,7 @@ try {
 
     New-Item -ItemType File -Path $flag -Force | Out-Null
     & "$PSScriptRoot\profile-manager.ps1" -Action Install -Profile Apex
-    Start-ScheduledTask -TaskName $taskName
-    $deadline = [DateTime]::UtcNow.AddSeconds(10)
-    while (-not (Test-Path -LiteralPath $ready) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 200 }
-    if (-not (Test-Path -LiteralPath $ready)) { throw 'Автоподбор Apex не запустился.' }
+    Start-ApexAutoWorker
 } catch {
     Stop-ApexAutoTask
     Clear-ApexAutoLists
