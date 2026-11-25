@@ -39,9 +39,18 @@ function Update-ApexRelays {
     $firstLine = Get-Content -LiteralPath $list -TotalCount 1
     if ($firstLine -match '^# revision: (\d+)$') { $currentRevision = [long]$Matches[1] }
 
-    $data = Get-Content -LiteralPath $cache -Raw | ConvertFrom-Json
-    $revision = [long]$data.revision
-    if ($revision -le $currentRevision -or -not $data.pops) { return }
+    # Apex may be replacing its cache while this check is running.
+    $data = $null
+    try {
+        $data = Get-Content -LiteralPath $cache -Raw -Encoding UTF8 -ErrorAction Stop |
+            ConvertFrom-Json -ErrorAction Stop
+    } catch [ArgumentException], [IO.IOException], [Management.Automation.ItemNotFoundException] {
+        return
+    }
+
+    $revision = 0L
+    if ($data -isnot [pscustomobject] -or -not [long]::TryParse([string]$data.revision, [ref]$revision) -or
+        $revision -le $currentRevision -or $data.pops -isnot [pscustomobject]) { return }
 
     $addresses = @(
         $data.pops.PSObject.Properties | ForEach-Object { $_.Value.relays } |
@@ -56,7 +65,7 @@ function Update-ApexRelays {
             } | Sort-Object -Unique
     )
     if ($addresses.Count -lt 20 -or $addresses.Count -gt 4096) {
-        throw 'В новом списке ретрансляторов Apex необычное число адресов.'
+        return
     }
 
     $token = [guid]::NewGuid().ToString('N')

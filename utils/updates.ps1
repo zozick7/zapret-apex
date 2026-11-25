@@ -44,6 +44,11 @@ if (-not (Test-Path -LiteralPath $zip -PathType Leaf) -or
         Remove-Item -LiteralPath $temp -ErrorAction SilentlyContinue
     }
 }
+$summary = [string](([string]$release.body -split '\r?\n' |
+    Where-Object { $_.Trim() } | Select-Object -First 1))
+$summary = ($summary -replace '^\s*(?:#{1,6}|[-*+])\s+', '' -replace '[\p{C}\p{Zl}\p{Zp}]+', ' ').Trim()
+if ($summary.Length -gt 160) { $summary = $summary.Substring(0,159).TrimEnd() + '…' }
+Set-Content -LiteralPath (Join-Path $folder 'release-summary.txt') -Value $summary -Encoding UTF8
 Set-Content -LiteralPath (Join-Path $updates 'ready-version.txt') -Value $tag -Encoding ASCII
 if ($Install) {
     . "$PSScriptRoot\install-update.ps1"

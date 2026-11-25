@@ -74,9 +74,22 @@ while ($true) {
     Write-Host ''
     Write-Host "Профиль  $(Get-ProfileLabel $selected)"
     Write-Host "Zapret   $status"
-    $ready = Get-Content -LiteralPath (Join-Path $env:LOCALAPPDATA 'ZapretGameProfiles\updates\ready-version.txt') -ErrorAction SilentlyContinue
+    $updates = Join-Path $env:LOCALAPPDATA 'ZapretGameProfiles\updates'
+    $ready = Get-Content -LiteralPath (Join-Path $updates 'ready-version.txt') -TotalCount 1 -ErrorAction SilentlyContinue
     if ($ready -match '^v(\d+\.\d+\.\d+)$' -and [version]$Matches[1] -gt [version]$current) {
-        Write-Host "Доступно $ready" -ForegroundColor Yellow
+        $notice = "Доступно $ready"
+        $summaryPath = Join-Path (Join-Path $updates $ready) 'release-summary.txt'
+        $summary = Get-Content -LiteralPath $summaryPath -TotalCount 1 -Encoding UTF8 -ErrorAction SilentlyContinue
+        if ($summary) {
+            $summary = ($summary -replace '[\p{C}\p{Zl}\p{Zp}]+', ' ').Trim()
+            if ($summary) { $notice += "  $summary" }
+        }
+        try { $width = [Console]::WindowWidth } catch { $width = 80 }
+        $limit = if ($width -gt 0) { [Math]::Min(88, $width - 1) } else { 79 }
+        if ($notice.Length -gt $limit -and $limit -gt 1) {
+            $notice = $notice.Substring(0, $limit - 1).TrimEnd() + '…'
+        }
+        Write-Host $notice -ForegroundColor Yellow
     }
     Write-Host ''
     Write-Host '  1  Выбрать профиль'
