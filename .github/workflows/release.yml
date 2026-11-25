@@ -19,4 +19,8 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create $env:GITHUB_REF_NAME dist/zapret-apex.zip --verify-tag --title $env:GITHUB_REF_NAME --notes-file RELEASE.md
+        run: |
+          $notes = (Get-Content -LiteralPath RELEASE.md -Raw).TrimEnd()
+          $buildUrl = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          @($notes, '', "[Журнал сборки]($buildUrl)") | Set-Content -LiteralPath dist/release-notes.md -Encoding utf8
+          gh release create $env:GITHUB_REF_NAME dist/zapret-apex.zip dist/SHA256SUMS.txt --verify-tag --title $env:GITHUB_REF_NAME --notes-file dist/release-notes.md

@@ -56,7 +56,16 @@ foreach ($file in $packages | Sort-Object -Unique) {
     Copy-Item -LiteralPath (Join-Path (Join-Path $base 'bin') $file) -Destination (Join-Path $stage 'bin')
 }
 
+# Compare the bundled engine with bol-van's published x64 checksum.
+$winwsHash = 'affb4f69d2ea302a7abccd5325d81826e140ddae014f1e070bc4a6c0dd555188'
+$winws = Join-Path $stage 'bin\winws.exe'
+if ((Get-FileHash -LiteralPath $winws -Algorithm SHA256).Hash -ine $winwsHash) {
+    throw 'winws.exe did not match the official Zapret v72.9 x64 checksum.'
+}
+
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 $output = Join-Path $OutputDirectory 'zapret-apex.zip'
 Compress-Archive -LiteralPath $stage -DestinationPath $output -Force
-Get-FileHash -LiteralPath $output -Algorithm SHA256
+$checksum = Get-FileHash -LiteralPath $output -Algorithm SHA256
+Set-Content -LiteralPath (Join-Path $OutputDirectory 'SHA256SUMS.txt') -Value "$($checksum.Hash.ToLowerInvariant())  zapret-apex.zip" -Encoding ASCII
+$checksum
