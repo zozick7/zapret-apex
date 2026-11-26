@@ -96,6 +96,8 @@
             if ($wasRunning -and (Get-ZapretService).Status -ne 'Running') { Start-Service -Name zapret }
             throw $failure
         }
+        try { Clear-OldZapretBackups }
+        catch { Write-Warning "Не удалось очистить старые копии обновлений. $($_.Exception.Message)" }
         Write-Host "Установлена версия $Tag. Копия прежних файлов хранится в $backup"
         return $true
     } finally { $lock.Dispose() }

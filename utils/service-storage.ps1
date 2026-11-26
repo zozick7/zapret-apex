@@ -83,3 +83,41 @@ function Copy-ZapretRuntime([string]$Source, [string]$Target) {
         [IO.File]::Copy((Join-Path $Source $relative), (Join-Path $Target $relative))
     }
 }
+
+function Register-ZapretBootTask([string]$Source) {
+    $folder = Join-Path (Get-ZapretProtectedRoot) 'Startup'
+    New-ZapretProtectedDirectory $folder
+    $script = Join-Path $folder 'service-boot.ps1'
+    $temporary = Join-Path $folder ([guid]::NewGuid().ToString('N') + '.tmp')
+    try {
+        [IO.File]::Copy($Source, $temporary)
+        if ([IO.File]::Exists($script)) { [IO.File]::Replace($temporary,$script,"$temporary.bak") }
+        else { [IO.File]::Move($temporary,$script) }
+    } finally {
+        Remove-Item -LiteralPath $temporary,"$temporary.bak" -ErrorAction SilentlyContinue
+    }
+    $powershell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+    $arguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $script + '"'
+    $action = New-ScheduledTaskAction -Execute $powershell -Argument $arguments -WorkingDirectory ([Environment]::SystemDirectory)
+    $trigger = New-ScheduledTaskTrigger -AtStartup
+    $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Minutes 2)
+    Register-ScheduledTask -TaskName 'Zapret Startup' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+}
+
+function Clear-OldZapretBackups {
+    $base = Get-ZapretProtectedRoot
+    $updates = Join-Path $base 'Updates'
+    if (-not (Test-Path -LiteralPath $updates)) { return }
+    Assert-ZapretProtectedDirectory $base
+    Assert-ZapretProtectedDirectory $updates
+    $copies = Get-ChildItem -LiteralPath $updates -Directory -Filter 'update-*' |
+        Where-Object { $_.Name -match '^update-[0-9a-f]{32}$' -and
+            -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) } |
+        Sort-Object LastWriteTimeUtc -Descending | Select-Object -Skip 2
+    foreach ($copy in $copies) {
+        if ([IO.Path]::GetDirectoryName($copy.FullName) -ine $updates) { continue }
+        Assert-ZapretProtectedDirectory $copy.FullName
+        [IO.Directory]::Delete($copy.FullName, $true)
+    }
+}

@@ -34,15 +34,19 @@ if ($Action -eq 'Remove') {
             Stop-Service -Name $serviceName
             Wait-ZapretService Stopped
         }
-        $result = & "$env:SystemRoot\System32\sc.exe" delete $serviceName
-        if ($LASTEXITCODE -ne 0) { throw ($result -join [Environment]::NewLine) }
-        Write-Host 'Zapret service removed.'
-    } else {
-        Write-Host 'Zapret service is not installed.'
     }
     & "$PSScriptRoot\apex-auto.ps1" -Action Disable
     & "$PSScriptRoot\apex-maintenance.ps1" -Action Remove
-    Remove-ZapretRuntime $installed.RuntimeRoot
+    if (Get-ScheduledTask -TaskName 'Zapret Startup' -ErrorAction SilentlyContinue) {
+        Unregister-ScheduledTask -TaskName 'Zapret Startup' -Confirm:$false
+    }
+    & "$PSScriptRoot\network-check.ps1" -RemoveRepair
+    if ($installed) {
+        $result = & "$env:SystemRoot\System32\sc.exe" delete $serviceName
+        if ($LASTEXITCODE -ne 0) { throw ($result -join [Environment]::NewLine) }
+        Remove-ZapretRuntime $installed.RuntimeRoot
+        Write-Host 'Служба Zapret удалена.'
+    }
     return
 }
 
@@ -187,8 +191,9 @@ try {
         & "$PSScriptRoot\apex-auto.ps1" -Action Sync
     }
 
-    $startMode = if ($KeepStopped -and $installed.Start -ne 2) { 'Manual' } else { 'Automatic' }
-    $startValue = if ($startMode -eq 'Automatic') { 2 } else { 3 }
+    $bootEnabled = -not $KeepStopped -or $installed.Start -eq 2 -or ($installed.BootManaged -and $installed.Start -eq 3)
+    $startMode = if ($bootEnabled) { 'Manual' } else { 'Disabled' }
+    $startValue = if ($bootEnabled) { 3 } else { 4 }
 
     $servicePid = 0
     if ($installed -and $installed.Status -ne 'Stopped') {
@@ -202,6 +207,7 @@ try {
     $updated = $false
     $wasRunning = $false
     try {
+        Register-ZapretBootTask (Join-Path $PSScriptRoot 'service-boot.ps1')
         if ($installed) {
             $wasRunning = $installed.Status -ne 'Stopped'
             if ($wasRunning) {
@@ -215,6 +221,7 @@ try {
             $created = $true
         }
         New-ItemProperty -LiteralPath $registry -Name 'ZozickInstallRoot' -Value $root -PropertyType String -Force | Out-Null
+        New-ItemProperty -LiteralPath $registry -Name 'ZozickBootManaged' -Value 1 -PropertyType DWord -Force | Out-Null
         if (-not $KeepStopped) {
             Start-Service -Name $serviceName
             Wait-ZapretService Running
@@ -232,6 +239,9 @@ try {
                 & "$env:SystemRoot\System32\sc.exe" delete $serviceName | Out-Null
             } elseif ($updated) {
                 Set-ZapretServiceConfig $installed.Command ([uint32]$installed.Start)
+                if (-not $installed.BootManaged) {
+                    Remove-ItemProperty -LiteralPath $registry -Name 'ZozickBootManaged' -ErrorAction SilentlyContinue
+                }
                 if ($installed.InstallRoot) {
                     New-ItemProperty -LiteralPath $registry -Name 'ZozickInstallRoot' -Value $installed.InstallRoot -PropertyType String -Force | Out-Null
                 } else {

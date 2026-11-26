@@ -98,11 +98,12 @@ while ($true) {
     Write-Host '  3  Проверить сеть'
     Write-Host '  4  Обновить'
     if ($selected -eq 'Apex') {
-        Write-Host '  5  Не пускает в матч'
+        Write-Host '  5  Записать отчёт о подключении'
         $auto = if (& "$PSScriptRoot\apex-auto.ps1" -Action Status) { 'вкл' } else { 'выкл' }
         Write-Host "  6  Помощь при входе в матч ($auto)"
     }
     elseif ($selected -eq 'Rust') { Write-Host '  5  Проверить карту Rust' }
+    if ($service -and (Test-ZapretOwner $service $root)) { Write-Host '  8  Удалить службу' }
     Write-Host '  0  Выход'
     $choice = Read-Host 'Номер'
     if ($null -eq $choice -or $choice.Trim() -eq '0') { break }
@@ -134,12 +135,15 @@ while ($true) {
             '2' {
                 Assert-ZapretServiceOwner $service
                 if ($running) {
-                    Set-Service -Name zapret -StartupType Manual
+                    Set-Service -Name zapret -StartupType Disabled
                     try {
                         Stop-Service -Name zapret
                         Wait-ZapretService Stopped
                     } catch {
-                        if ($service.Start -eq 2) { Set-Service -Name zapret -StartupType Automatic }
+                        switch ($service.Start) {
+                            2 { Set-Service -Name zapret -StartupType Automatic }
+                            3 { Set-Service -Name zapret -StartupType Manual }
+                        }
                         throw
                     }
                     Invoke-MenuAction { & "$PSScriptRoot\network-check.ps1" -RemoveRepair }
@@ -174,6 +178,10 @@ while ($true) {
                     & $script -Action Enable
                     Add-MenuMessage 'Помощь Apex включена. Правила действуют, пока Apex открыт.'
                 }
+            }
+            '8' {
+                if (-not (Test-ZapretOwner $service $root)) { throw 'Открой меню из папки, где установлена служба.' }
+                Invoke-MenuAction { & $manager -Action Remove }
             }
             { $_ -in '4','7' } {
                 $script:updated = $false

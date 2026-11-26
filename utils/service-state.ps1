@@ -27,6 +27,7 @@ function Get-ZapretService {
         Profile = $profile
         Managed = [string]$config.ZozickProfile -match '^[a-zA-Z][a-zA-Z0-9_-]{0,31}$'
         Start = $config.Start
+        BootManaged = $config.ZozickBootManaged -eq 1
     }
 }
 

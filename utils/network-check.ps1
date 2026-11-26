@@ -126,7 +126,7 @@ function Repair-DiscordMedia {
             $failed++
         }
     }
-    if ($repaired) { Write-Host 'Подобраны рабочие адреса для картинок Discord. Если картинки всё ещё не грузятся, нажми Ctrl+R в Discord.' }
+    if ($repaired) { Write-Host 'Адреса картинок Discord обновлены в hosts. Если картинки всё ещё не грузятся, нажми Ctrl+R в Discord.' }
     if ($failed -and $interfaceName) { Write-Warning 'Discord: отключи VPN и повтори проверку.' }
     elseif ($failed) { Write-Warning 'Discord: часть картинок недоступна.' }
     elseif (-not $repaired) { Write-Host 'Discord: тестовые картинки загрузились.' }
